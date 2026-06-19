@@ -4,3 +4,6 @@ $file = "$env:temp\Install-WMF3Hotfix.ps1"
 
 (New-Object -TypeName System.Net.WebClient).DownloadFile($url, $file)
 powershell.exe -ExecutionPolicy ByPass -File $file -Verbose
+
+winrm enumerate winrm/config/Listener
+
