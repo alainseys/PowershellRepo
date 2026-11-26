@@ -53,3 +53,10 @@ New-OSDCloudISO -WorkspacePath $OSDCloudWorkspace
 #Create Cloud USB, which will be based on the workspace created above.
 #This takes a little awhile and does the basic setup of the USB drive, including copying the WinPE image to the USB drive.
 New-OSDCloudUSB
+
+# To create disk use MBR
+#DISKPART
+#list disk
+#select disk <disknumber>
+#CLEAN
+#convert MBR
