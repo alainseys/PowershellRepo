@@ -1,91 +1,332 @@
-# Prequisties
-# - USB drive (32 GB or larger) The larger the stick/disk the more you can cache Windows images and driver packs.
-# - Latest version of Windows ADK installed Windows ADK (Microsoft Learn)
-# - Latest version of WinPE Add-On https://go.microsoft.com/fwlink/?linkid=2289981
+#Requires -Version 5.1
+#Requires -RunAsAdministrator
 
-#Install OSDCloud
+<#
+.SYNOPSIS
+    Installeert en onderhoudt een OSDCloud WinPE-omgeving.
 
-Install-Module OSD -Force
+.DESCRIPTION
+    - Installeert of actualiseert de OSD- en HPCMSL-modules.
+    - Bepaalt de geinstalleerde ADK WinPE-versie.
+    - Maakt een OSDCloud-template en workspace.
+    - Bouwt een ISO.
+    - Selecteert en formatteert optioneel een USB-schijf als MBR.
+    - Onderhoudt een bestaande workspace en OSDCloud-USB.
 
-#Install HPCMSL
-Install-module HPCMSL
+.NOTES
+    Start dit script als administrator in Windows PowerShell 5.1.
+    Het formatteren van een USB-schijf verwijdert alle gegevens op de gekozen schijf.
+#>
 
-#Make Sure you're running Latest
-Update-Module -name OSD -Force
+[CmdletBinding()]
+param(
+    [string]$WallpaperPath = 'C:\Wallpapers\LebonIT.jpg',
+    [string]$Brand = 'Lebon.IT'
+)
 
-#Make Sure you're running Latest
-Update-Module -name HPCMSL -Force -Acceptlicense
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
-#If the module is not found but installed
-import-module -name OSD -Force
-
-#Get ADK Default Locations
-$ADKAMD64WinPELocation = "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\en-us\winpe.wim"
-$ADKAMD64WinPEVersion = (Get-WindowsImage -ImagePath $ADKAMD64WinPELocation -Index 1).Version.replace('10.0.','')
-
-#Create the Template Name & Display Name in Console 
-$TemplateName = "OSDCloudWinPE-$($ADKAMD64WinPEVersion)"
-Write-Host -ForegroundColor Green "OSDCloud Template Name Set to: $TemplateName"
-
-#Setup WorkSpace Location
-Import-Module -name OSD -force
-$OSDCloudWorkspace = "C:\OSDCloudWinPE-$($ADKAMD64WinPEVersion)"
-[void][System.IO.Directory]::CreateDirectory($OSDCloudWorkspace)
-if (Test-Path -Path $OSDCloudWorkspace){
-    Write-Host -ForegroundColor Green "Workspace Location Created: $OSDCloudWorkspace"
+function Write-Step {
+    param([Parameter(Mandatory)][string]$Message)
+    Write-Host "`n==> $Message" -ForegroundColor Cyan
 }
 
-#New Template, this will create a new template based on the ADK WinPE version installed on the system
-#This takes awhile, so be patient. It will take the winpe.wim from the ADK, apply all of the optional components
-#It also will add 7Zip into the WinPE image, long with several other components uses by OSDCloud.
-New-OSDCloudTemplate -Name $TemplateName -Add7Zip
-
-
-#Create USB
-#This will create a new workspace based on the template created above.  This is very quick because it's just copying the template to the workspace location.
-#Once it does the copy, you can make your edits to the workspace, most of which are done with Edit-OSDCloudWinPE.
-New-OSDCloudWorkspace -WorkspacePath $OSDCloudWorkspace
-#Create the Setup Complete Templates that you can modify to have OSDCloud kick off your own custom script during Setup Complete.
-New-OSDCloudWorkSpaceSetupCompleteTemplate
-
-#Added HPCMSL into WinPE, USB Ethernet Drivers & HP WinPE DriverPack, You can choose and pick. HPCMSL helps installing firmware and drivers for HP devices
-Edit-OSDCloudWinPE -PSModuleInstall HPCMSL -CloudDriver Dell,HP,IntelNet,LenovoDock,Nutanix,USB,VMware,WiFi -Wallpaper "C:\Wallpapers\LebonIT.jpg" -StartOSDCloudGUI -Brand 'Lebon.IT'
-#After you run this, if you're going to use this for PXE or ISE, you do not need to create the USB drive.
-
-#Instead of creating the USB drive, you can create a new ISO file that you can use for PXE or ISE.
-New-OSDCloudISO -WorkspacePath $OSDCloudWorkspace
-#You can now use that ISO to boot VM's or grab the contents for PXE.
-
-#Create Cloud USB, which will be based on the workspace created above.
-#This takes a little awhile and does the basic setup of the USB drive, including copying the WinPE image to the USB drive.
-New-OSDCloudUSB
-
-# To create disk use MBR
-#DISKPART
-#list disk
-#select disk <disknumber>
-#CLEAN
-#convert MBR
-
-# Maintance of OSD cloud 
-#-----------------------------------------------
-Update-Module -name OSD -Force
-import-module -name OSD -Force
-
-#Clear old OSD Modules from WorkSpace
-$CloudWorkSpace = Get-OSDCloudWorkspace
-Remove-Item -Path "$CloudWorkSpace\PowerShell\Offline\Modules\OSD" -Force -Recurse -ErrorAction SilentlyContinue
-
-#Clear old OSD Modules from Flash Drives
-$FlashDrives = get-volume | Where-Object {$_.DriveType -eq "Removable"}
-Foreach ($FlashDrive in $FlashDrives){
-     if (test-path -path "$($FlashDrive.DriveLetter)\OSDCloud\PowerShell\Offline\Modules\OSD"){
-        Remove-Item -Path "$($FlashDrive.DriveLetter)\OSDCloud\PowerShell\Offline\Modules\OSD" -Force -Recurse -ErrorAction SilentlyContinue
-
-     }
+function Write-Success {
+    param([Parameter(Mandatory)][string]$Message)
+    Write-Host $Message -ForegroundColor Green
 }
 
-#Updates the latest version of OSD module in the WinPE boot image
-Edit-OSDCloudWinPE -PSModuleInstall HPCMSL -CloudDriver Dell,HP,IntelNet,LenovoDock,Nutanix,USB,VMware,WiFi -Wallpaper "C:\Wallpapers\LebonIT.jpg" -StartOSDCloudGUI -Brand 'Lebon.IT'
+function Assert-Administrator {
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $Principal = [Security.Principal.WindowsPrincipal]::new($Identity)
 
-Update-OSDCloudUSB -PSUpdate #Updates the USB Stick with the latest PS Modules & Boot Image that was just updated.
+    if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Start Windows PowerShell als administrator en voer het script opnieuw uit.'
+    }
+}
+
+function Initialize-PowerShellEnvironment {
+    Write-Step 'PowerShell-provider en vereiste modules voorbereiden'
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+    }
+
+    $Repository = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+    if ($Repository -and $Repository.InstallationPolicy -ne 'Trusted') {
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+    }
+}
+
+function Install-OrUpdateModule {
+    param(
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    Write-Step "Module $Name installeren of actualiseren"
+
+    $InstalledModule = Get-InstalledModule -Name $Name -ErrorAction SilentlyContinue
+
+    if (-not $InstalledModule) {
+        $InstallParameters = @{
+            Name         = $Name
+            Scope        = 'AllUsers'
+            Force        = $true
+            AllowClobber = $true
+        }
+        Install-Module @InstallParameters
+    }
+    else {
+        $UpdateParameters = @{
+            Name  = $Name
+            Force = $true
+        }
+        try {
+            Update-Module @UpdateParameters
+        }
+        catch {
+            Write-Warning "Update van $Name is niet gelukt. De module wordt opnieuw geinstalleerd. Fout: $($_.Exception.Message)"
+            $InstallParameters = @{
+                Name         = $Name
+                Scope        = 'AllUsers'
+                Force        = $true
+                AllowClobber = $true
+            }
+            Install-Module @InstallParameters
+        }
+    }
+
+    Import-Module -Name $Name -Force
+    $LoadedModule = Get-Module -Name $Name | Sort-Object Version -Descending | Select-Object -First 1
+    Write-Success "$Name versie $($LoadedModule.Version) is geladen."
+}
+
+function Install-RequiredModules {
+    Initialize-PowerShellEnvironment
+    Install-OrUpdateModule -Name 'OSD'
+    Install-OrUpdateModule -Name 'HPCMSL'
+}
+
+function Get-OSDCloudConfiguration {
+    $WinPEPath = 'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\en-us\winpe.wim'
+
+    if (-not (Test-Path -LiteralPath $WinPEPath)) {
+        throw "ADK WinPE-image niet gevonden: $WinPEPath. Installeer de Windows ADK en de afzonderlijke WinPE add-on."
+    }
+
+    $Image = Get-WindowsImage -ImagePath $WinPEPath -Index 1
+    $WinPEVersion = $Image.Version.ToString() -replace '^10\.0\.', ''
+    $TemplateName = "OSDCloudWinPE-$WinPEVersion"
+    $WorkspacePath = "C:\OSDCloudWinPE-$WinPEVersion"
+
+    [pscustomobject]@{
+        WinPEPath     = $WinPEPath
+        WinPEVersion  = $WinPEVersion
+        TemplateName  = $TemplateName
+        WorkspacePath = $WorkspacePath
+    }
+}
+
+function Test-Wallpaper {
+    if (-not (Test-Path -LiteralPath $WallpaperPath)) {
+        throw "Wallpaper niet gevonden: $WallpaperPath"
+    }
+}
+
+function Invoke-OSDCloudWinPEEdit {
+    Test-Wallpaper
+
+    $Parameters = @{
+        PSModuleInstall = 'HPCMSL'
+        CloudDriver     = @('Dell', 'HP', 'IntelNet', 'LenovoDock', 'Nutanix', 'USB', 'VMware', 'WiFi')
+        Wallpaper       = $WallpaperPath
+        StartOSDCloudGUI = $true
+        Brand           = $Brand
+    }
+
+    Edit-OSDCloudWinPE @Parameters
+}
+
+function New-CompleteOSDCloudBuild {
+    Install-RequiredModules
+    $Configuration = Get-OSDCloudConfiguration
+
+    Write-Success "OSDCloud-template: $($Configuration.TemplateName)"
+    Write-Success "Workspace: $($Configuration.WorkspacePath)"
+
+    [void][System.IO.Directory]::CreateDirectory($Configuration.WorkspacePath)
+
+    Write-Step 'Nieuwe OSDCloud-template maken'
+    New-OSDCloudTemplate -Name $Configuration.TemplateName -Add7Zip
+
+    Write-Step 'Nieuwe OSDCloud-workspace maken'
+    New-OSDCloudWorkspace -WorkspacePath $Configuration.WorkspacePath
+
+    Write-Step 'SetupComplete-template toevoegen'
+    New-OSDCloudWorkSpaceSetupCompleteTemplate
+
+    Write-Step 'WinPE aanpassen met HPCMSL, drivers, branding en OSDCloud GUI'
+    Invoke-OSDCloudWinPEEdit
+
+    Write-Step 'OSDCloud ISO maken'
+    New-OSDCloudISO -WorkspacePath $Configuration.WorkspacePath
+
+    Write-Success 'OSDCloud-template, workspace en ISO zijn aangemaakt.'
+}
+
+function New-OSDCloudISOOnly {
+    Install-RequiredModules
+    $Configuration = Get-OSDCloudConfiguration
+
+    if (-not (Test-Path -LiteralPath $Configuration.WorkspacePath)) {
+        throw "Workspace niet gevonden: $($Configuration.WorkspacePath). Voer eerst de volledige build uit."
+    }
+
+    Write-Step "ISO maken vanuit $($Configuration.WorkspacePath)"
+    New-OSDCloudISO -WorkspacePath $Configuration.WorkspacePath
+    Write-Success 'OSDCloud ISO is aangemaakt.'
+}
+
+function Select-USBPhysicalDisk {
+    $UsbDisks = @(Get-Disk | Where-Object {
+        $_.BusType -eq 'USB' -and $_.OperationalStatus -eq 'Online'
+    } | Sort-Object Number)
+
+    if ($UsbDisks.Count -eq 0) {
+        throw 'Geen online USB-schijf gevonden. Plaats een USB-schijf en probeer opnieuw.'
+    }
+
+    Write-Host "`nBeschikbare USB-schijven:" -ForegroundColor Yellow
+    $UsbDisks | Format-Table Number, FriendlyName, BusType,
+        @{Name = 'SizeGB'; Expression = { [math]::Round($_.Size / 1GB, 2) }},
+        PartitionStyle, OperationalStatus -AutoSize
+
+    $Selection = Read-Host 'Voer het schijfnummer van de USB-schijf in'
+    if ($Selection -notmatch '^\d+$') {
+        throw 'Ongeldig schijfnummer.'
+    }
+
+    $DiskNumber = [int]$Selection
+    $SelectedDisk = $UsbDisks | Where-Object Number -eq $DiskNumber
+
+    if (-not $SelectedDisk) {
+        throw "Schijf $DiskNumber is niet een van de getoonde USB-schijven."
+    }
+
+    $SelectedDisk
+}
+
+function Format-USBAsMBR {
+    $Disk = Select-USBPhysicalDisk
+    $SizeGB = [math]::Round($Disk.Size / 1GB, 2)
+
+    Write-Host "`nWAARSCHUWING: alle gegevens worden verwijderd." -ForegroundColor Red
+    Write-Host "Geselecteerd: schijf $($Disk.Number), $($Disk.FriendlyName), $SizeGB GB" -ForegroundColor Yellow
+    $Confirmation = Read-Host "Typ exact FORMATTEER-$($Disk.Number) om door te gaan"
+
+    if ($Confirmation -cne "FORMATTEER-$($Disk.Number)") {
+        Write-Warning 'Formatteren geannuleerd.'
+        return $null
+    }
+
+    Write-Step "USB-schijf $($Disk.Number) wissen en initialiseren als MBR"
+    Set-Disk -Number $Disk.Number -IsOffline $false -ErrorAction SilentlyContinue
+    Set-Disk -Number $Disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue
+    Clear-Disk -Number $Disk.Number -RemoveData -RemoveOEM -Confirm:$false
+    Initialize-Disk -Number $Disk.Number -PartitionStyle MBR
+
+    $Partition = New-Partition -DiskNumber $Disk.Number -UseMaximumSize -AssignDriveLetter -IsActive
+    Format-Volume -Partition $Partition -FileSystem FAT32 -NewFileSystemLabel 'OSDCloud' -Confirm:$false -Force | Out-Null
+
+    $Volume = $Partition | Get-Volume
+    Write-Success "USB-schijf is als MBR/FAT32 geformatteerd en gekoppeld als $($Volume.DriveLetter):"
+    $Disk
+}
+
+function New-OSDCloudUSBMedia {
+    Install-RequiredModules
+
+    $FormattedDisk = Format-USBAsMBR
+    if (-not $FormattedDisk) {
+        return
+    }
+
+    Write-Step 'OSDCloud USB aanmaken'
+    Write-Host "Selecteer in de OSDCloud-prompt schijfnummer $($FormattedDisk.Number)." -ForegroundColor Yellow
+    New-OSDCloudUSB
+    Write-Success 'OSDCloud USB-proces is voltooid.'
+}
+
+function Update-OSDCloudEnvironment {
+    Install-RequiredModules
+
+    Write-Step 'Actieve OSDCloud-workspace ophalen'
+    $CloudWorkspace = Get-OSDCloudWorkspace
+    if (-not $CloudWorkspace) {
+        throw 'Er is geen actieve OSDCloud-workspace gevonden.'
+    }
+
+    $WorkspaceOSDModule = Join-Path $CloudWorkspace 'PowerShell\Offline\Modules\OSD'
+    Write-Step 'Oude OSD-module uit workspace verwijderen'
+    Remove-Item -LiteralPath $WorkspaceOSDModule -Force -Recurse -ErrorAction SilentlyContinue
+
+    Write-Step 'Oude OSD-modules van verwijderbare stations verwijderen'
+    $FlashDrives = @(Get-Volume | Where-Object {
+        $_.DriveType -eq 'Removable' -and $_.DriveLetter
+    })
+
+    foreach ($FlashDrive in $FlashDrives) {
+        $UsbOSDModule = "$($FlashDrive.DriveLetter):\OSDCloud\PowerShell\Offline\Modules\OSD"
+        if (Test-Path -LiteralPath $UsbOSDModule) {
+            Remove-Item -LiteralPath $UsbOSDModule -Force -Recurse -ErrorAction SilentlyContinue
+            Write-Success "Oude OSD-module verwijderd van $($FlashDrive.DriveLetter):"
+        }
+    }
+
+    Write-Step 'WinPE boot image actualiseren'
+    Invoke-OSDCloudWinPEEdit
+
+    Write-Step 'OSDCloud USB actualiseren met de nieuwste PowerShell-modules en boot image'
+    Update-OSDCloudUSB -PSUpdate
+
+    Write-Success 'Onderhoud van OSDCloud is voltooid.'
+}
+
+function Show-Menu {
+    Clear-Host
+    Write-Host 'OSDCloud Build en Onderhoud' -ForegroundColor Cyan
+    Write-Host '==========================' -ForegroundColor Cyan
+    Write-Host '1. Volledige build: modules, template, workspace en ISO'
+    Write-Host '2. Alleen ISO maken vanuit bestaande workspace'
+    Write-Host '3. USB als MBR/FAT32 formatteren en OSDCloud USB maken'
+    Write-Host '4. Bestaande OSDCloud-workspace en USB onderhouden'
+    Write-Host '5. Alleen vereiste PowerShell-modules installeren/actualiseren'
+    Write-Host '0. Afsluiten'
+}
+
+try {
+    Assert-Administrator
+
+    do {
+        Show-Menu
+        $Choice = Read-Host 'Maak een keuze'
+
+        switch ($Choice) {
+            '1' { New-CompleteOSDCloudBuild; Pause }
+            '2' { New-OSDCloudISOOnly; Pause }
+            '3' { New-OSDCloudUSBMedia; Pause }
+            '4' { Update-OSDCloudEnvironment; Pause }
+            '5' { Install-RequiredModules; Pause }
+            '0' { Write-Host 'Script afgesloten.' -ForegroundColor Cyan }
+            default { Write-Warning 'Ongeldige keuze.'; Start-Sleep -Seconds 2 }
+        }
+    } while ($Choice -ne '0')
+}
+catch {
+    Write-Host "`nFOUT: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Regel: $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkRed
+    exit 1
+}
