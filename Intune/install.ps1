@@ -6,15 +6,18 @@
     Installeert en onderhoudt een OSDCloud WinPE-omgeving.
 
 .DESCRIPTION
+    - Controleert en laadt een ondersteunde PowerShellGet-versie.
     - Installeert of actualiseert de OSD- en HPCMSL-modules.
+    - Accepteert automatisch de licentie van HPCMSL en de HP-afhankelijkheden.
     - Bepaalt de geinstalleerde ADK WinPE-versie.
     - Maakt een OSDCloud-template en workspace.
     - Bouwt een ISO.
-    - Selecteert en formatteert optioneel een USB-schijf als MBR.
+    - Selecteert en formatteert optioneel een USB-schijf als MBR/FAT32.
     - Onderhoudt een bestaande workspace en OSDCloud-USB.
 
 .NOTES
     Start dit script als administrator in Windows PowerShell 5.1.
+    Sluit na een upgrade van PowerShellGet alle PowerShell-vensters en start opnieuw.
     Het formatteren van een USB-schijf verwijdert alle gegevens op de gekozen schijf.
 #>
 
@@ -49,65 +52,123 @@ function Assert-Administrator {
 function Initialize-PowerShellEnvironment {
     Write-Step 'PowerShell-provider en vereiste modules voorbereiden'
 
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
     if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
         Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
     }
 
+    $PowerShellGet = Get-Module -Name PowerShellGet -ListAvailable |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+
+    if (-not $PowerShellGet -or $PowerShellGet.Version -lt [version]'2.0.0') {
+        throw 'PowerShellGet 2.x of nieuwer is vereist. Installeer PowerShellGet en PackageManagement, sluit PowerShell volledig af en start opnieuw.'
+    }
+
+    $LoadedPowerShellGet = Get-Module -Name PowerShellGet
+    if ($LoadedPowerShellGet -and $LoadedPowerShellGet.Version -lt [version]'2.0.0') {
+        Remove-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
+    }
+
+    Import-Module -Name PowerShellGet -RequiredVersion $PowerShellGet.Version -Force
+    Write-Success "PowerShellGet versie $($PowerShellGet.Version) is actief geladen."
+
     $Repository = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-    if ($Repository -and $Repository.InstallationPolicy -ne 'Trusted') {
+    if (-not $Repository) {
+        Register-PSRepository -Default
+        $Repository = Get-PSRepository -Name PSGallery
+    }
+
+    if ($Repository.InstallationPolicy -ne 'Trusted') {
         Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
     }
 }
 
 function Install-OrUpdateModule {
     param(
-        [Parameter(Mandatory)][string]$Name
+        [Parameter(Mandatory)][string]$Name,
+        [switch]$AcceptLicense
     )
 
     Write-Step "Module $Name installeren of actualiseren"
 
-    $InstalledModule = Get-InstalledModule -Name $Name -ErrorAction SilentlyContinue
+    $InstalledModule = Get-InstalledModule -Name $Name -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
 
     if (-not $InstalledModule) {
         $InstallParameters = @{
             Name         = $Name
+            Repository   = 'PSGallery'
             Scope        = 'AllUsers'
             Force        = $true
             AllowClobber = $true
+            ErrorAction  = 'Stop'
         }
+
+        if ($AcceptLicense) {
+            $InstallParameters.AcceptLicense = $true
+        }
+
         Install-Module @InstallParameters
     }
     else {
         $UpdateParameters = @{
-            Name  = $Name
-            Force = $true
+            Name        = $Name
+            Force       = $true
+            ErrorAction = 'Stop'
         }
+
+        if ($AcceptLicense) {
+            $UpdateParameters.AcceptLicense = $true
+        }
+
         try {
             Update-Module @UpdateParameters
         }
         catch {
-            Write-Warning "Update van $Name is niet gelukt. De module wordt opnieuw geinstalleerd. Fout: $($_.Exception.Message)"
-            $InstallParameters = @{
-                Name         = $Name
-                Scope        = 'AllUsers'
-                Force        = $true
-                AllowClobber = $true
+            if ($_.Exception.Message -match 'currently in use') {
+                Write-Warning "$Name versie $($InstalledModule.Version) is momenteel geladen. De geinstalleerde versie wordt verder gebruikt."
             }
-            Install-Module @InstallParameters
+            else {
+                Write-Warning "Update van $Name is niet gelukt. De module wordt opnieuw geinstalleerd. Fout: $($_.Exception.Message)"
+
+                $InstallParameters = @{
+                    Name         = $Name
+                    Repository   = 'PSGallery'
+                    Scope        = 'AllUsers'
+                    Force        = $true
+                    AllowClobber = $true
+                    ErrorAction  = 'Stop'
+                }
+
+                if ($AcceptLicense) {
+                    $InstallParameters.AcceptLicense = $true
+                }
+
+                Install-Module @InstallParameters
+            }
         }
     }
 
-    Import-Module -Name $Name -Force
-    $LoadedModule = Get-Module -Name $Name | Sort-Object Version -Descending | Select-Object -First 1
+    Import-Module -Name $Name -Force -ErrorAction Stop
+    $LoadedModule = Get-Module -Name $Name |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+
+    if (-not $LoadedModule) {
+        throw "Module $Name is niet correct geladen."
+    }
+
     Write-Success "$Name versie $($LoadedModule.Version) is geladen."
 }
 
 function Install-RequiredModules {
     Initialize-PowerShellEnvironment
     Install-OrUpdateModule -Name 'OSD'
-    Install-OrUpdateModule -Name 'HPCMSL'
+    Install-OrUpdateModule -Name 'HPCMSL' -AcceptLicense
 }
 
 function Get-OSDCloudConfiguration {
@@ -140,11 +201,11 @@ function Invoke-OSDCloudWinPEEdit {
     Test-Wallpaper
 
     $Parameters = @{
-        PSModuleInstall = 'HPCMSL'
-        CloudDriver     = @('Dell', 'HP', 'IntelNet', 'LenovoDock', 'Nutanix', 'USB', 'VMware', 'WiFi')
-        Wallpaper       = $WallpaperPath
+        PSModuleInstall  = 'HPCMSL'
+        CloudDriver      = @('Dell', 'HP', 'IntelNet', 'LenovoDock', 'Nutanix', 'USB', 'VMware', 'WiFi')
+        Wallpaper        = $WallpaperPath
         StartOSDCloudGUI = $true
-        Brand           = $Brand
+        Brand            = $Brand
     }
 
     Edit-OSDCloudWinPE @Parameters
