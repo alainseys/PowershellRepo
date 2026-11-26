@@ -35,7 +35,7 @@ if (Test-Path -Path $OSDCloudWorkspace){
 New-OSDCloudTemplate -Name $TemplateName -Add7Zip
 
 
-#New WorkSpace
+#Create USB
 #This will create a new workspace based on the template created above.  This is very quick because it's just copying the template to the workspace location.
 #Once it does the copy, you can make your edits to the workspace, most of which are done with Edit-OSDCloudWinPE.
 New-OSDCloudWorkspace -WorkspacePath $OSDCloudWorkspace
@@ -46,3 +46,10 @@ New-OSDCloudWorkSpaceSetupCompleteTemplate
 Edit-OSDCloudWinPE -PSModuleInstall HPCMSL -CloudDriver Dell,HP,IntelNet,LenovoDock,Nutanix,USB,VMware,WiFi -Wallpaper "C:\Wallpapers\LebonIT.jpg" -StartOSDCloudGUI -Brand 'Lebon.IT'
 #After you run this, if you're going to use this for PXE or ISE, you do not need to create the USB drive.
 
+#Instead of creating the USB drive, you can create a new ISO file that you can use for PXE or ISE.
+New-OSDCloudISO -WorkspacePath $OSDCloudWorkspace
+#You can now use that ISO to boot VM's or grab the contents for PXE.
+
+#Create Cloud USB, which will be based on the workspace created above.
+#This takes a little awhile and does the basic setup of the USB drive, including copying the WinPE image to the USB drive.
+New-OSDCloudUSB
