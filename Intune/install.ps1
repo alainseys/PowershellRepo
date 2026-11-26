@@ -1,4 +1,10 @@
+# Prequisties
+# - USB drive (32 GB or larger) The larger the stick/disk the more you can cache Windows images and driver packs.
+# - Latest version of Windows ADK installed Windows ADK (Microsoft Learn)
+# - Latest version of WinPE Add-On https://go.microsoft.com/fwlink/?linkid=2289981
+
 #Install OSDCloud
+
 Install-Module OSD -Force
 
 #Install HPCMSL
