@@ -25,8 +25,8 @@
 
 [CmdletBinding()]
 param(
-    [string]$WallpaperPath = 'C:\Wallpapers\LebonIT.jpg',
-    [string]$Brand = 'Lebon.IT',
+    [string]$WallpaperPath = 'C:\Wallpapers\Company.jpg',
+    [string]$Brand = 'Company Name',
     [string]$LogDirectory = 'C:\OSDCloudLogs'
 )
 
